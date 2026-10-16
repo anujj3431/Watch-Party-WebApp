@@ -32,7 +32,7 @@ async function start({port=+process.env.PORT||3000,hostGraceMs=+process.env.HOST
       case'ended':{const x=r.ended(m.src);if(x){bc(r,{t:'pb',pb:x,by:null});push(r)}break}
       case'chat':{const g=r.addChat(id,m.text);if(g)bc(r,{t:'chat',msg:g});break}
       case'react':if(EMO.includes(m.emoji))bc(r,{t:'react',emoji:m.emoji,name:r.members.get(id).name});break;
-      case'q_add':{const mv=byId(m.movieId);const it=mv?{src:mv.url,title:mv.title,movieId:mv.id}:/^https?:\/\//.test(m.src||'')?{src:String(m.src).slice(0,500),title:String(m.title||m.src).slice(0,80)}:null;if(!it)return send({t:'err',m:'Invalid video'});r.qAdd(id,it);push(r);break}
+      case'q_add':{const mv=byId(m.movieId);const it=mv?{src:mv.url,title:mv.title,movieId:mv.id}:/^https?:\/\//.test(m.src||'')?{src:String(m.src).slice(0,500),title:String(m.title||m.src).slice(0,80)}:null;if(!it)return send({t:'err',m:'Invalid video URL'});if(!r.qAdd(id,it))return send({t:'err',m:'Queue is full (100 items maximum)'});notice(r,`${r.members.get(id)?.name||'Someone'} added “${it.title}” to the queue`);push(r);break}
       case'q_rm':r.qRm(m.id);push(r);break;
       case'q_mv':r.qMv(m.id,m.dir);push(r);break;
       case'poll_new':{const x=r.pollNew(id,m.q,m.opts,m.allowMultiple);if(x&&x.err)return e(x);notice(r,`${r.members.get(id)?.name||'Someone'} created a poll: ${String(m.q||'').slice(0,100)}`);push(r);break;}
