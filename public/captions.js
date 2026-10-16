@@ -1,119 +1,59 @@
 (()=>{
   const $=s=>document.querySelector(s), v=$('#v');
   if(!v)return;
-  let recorder=null,busy=false,enabled=false,showing=true,socket=null,lastMessageHandler=null;
-
+  let recorder=null,busy=false,enabled=false,showing=false,socket=null;
   const backend=()=>String(window.WATCH_PARTY_BACKEND_URL||location.origin).replace(/\/+$/,'');
   const isHost=()=>typeof room!=='undefined'&&typeof me!=='undefined'&&room&&room.hostId===me;
-
   function playerBox(){return v.closest('.player')||v.parentElement}
   function overlay(){
-    let x=$('#liveCaptionOverlay');
-    if(x)return x;
-    x=document.createElement('div');
-    x.id='liveCaptionOverlay';
-    x.setAttribute('aria-live','polite');
+    let x=$('#liveCaptionOverlay');if(x)return x;
+    x=document.createElement('div');x.id='liveCaptionOverlay';x.setAttribute('aria-live','polite');
     Object.assign(x.style,{position:'absolute',left:'5%',right:'5%',bottom:'7%',zIndex:20,textAlign:'center',fontSize:'clamp(18px,2.4vw,32px)',fontWeight:'700',lineHeight:'1.3',color:'#fff',textShadow:'0 2px 5px #000,0 0 10px #000',background:'rgba(0,0,0,.28)',borderRadius:'8px',padding:'6px 12px',pointerEvents:'none',display:'none',boxSizing:'border-box'});
-    const p=playerBox();
-    if(p){if(getComputedStyle(p).position==='static')p.style.position='relative';p.appendChild(x)}
-    return x;
+    const p=playerBox();if(p){if(getComputedStyle(p).position==='static')p.style.position='relative';p.appendChild(x)}return x;
   }
-  function showCaption(text){
-    const x=overlay();
-    x.textContent=String(text||'').trim().slice(0,300);
-    x.style.display=showing&&x.textContent?'block':'none';
-    clearTimeout(x._hide);
-    if(x.textContent)x._hide=setTimeout(()=>{x.style.display='none'},6500);
-  }
+  function showCaption(text){const x=overlay();x.textContent=String(text||'').trim().slice(0,300);x.style.display=showing&&x.textContent?'block':'none';clearTimeout(x._hide);if(x.textContent)x._hide=setTimeout(()=>{x.style.display='none'},6500)}
   function clearCaption(){const x=$('#liveCaptionOverlay');if(x){x.textContent='';x.style.display='none'}}
-
   function ensureUi(){
-    const tools=document.querySelector('.media-tools');
-    if(!tools||$('#captionToggle'))return;
-    const b=document.createElement('button');
-    b.id='captionToggle';b.type='button';b.textContent='CC: Off';b.title='Turn live captions on/off';
-    b.onclick=toggle;
-    const status=document.createElement('span');status.id='captionStatus';status.className='mut';status.textContent='Live captions: off';
-    tools.append(b,status);updateUi();
+    const tools=document.querySelector('.media-tools');if(!tools||$('#captionToggle'))return;
+    const b=document.createElement('button');b.id='captionToggle';b.type='button';b.textContent='CC: Off';b.title='Turn live captions on/off';b.onclick=toggle;
+    const status=document.createElement('span');status.id='captionStatus';status.className='mut';status.textContent='Live captions: off';tools.append(b,status);updateUi();
   }
-  function updateUi(){
-    const b=$('#captionToggle'),s=$('#captionStatus');
-    if(b)b.textContent=showing?'CC: On':'CC: Off';
-    if(s)s.textContent=enabled?(showing?'Live captions: on':'Live captions: hidden'):'Live captions: off';
-  }
-
-  function findSocket(){
-    if(socket&&socket.readyState===1)return socket;
-    return null;
-  }
+  function updateUi(){const b=$('#captionToggle'),s=$('#captionStatus');if(b)b.textContent=showing?'CC: On':'CC: Off';if(s)s.textContent=enabled?(showing?'Live captions: on':'Live captions: hidden'):'Live captions: off'}
   const NativeSend=WebSocket.prototype.send;
-  if(!WebSocket.prototype.__watchPartyCaptionPatch){
-    WebSocket.prototype.__watchPartyCaptionPatch=true;
-    WebSocket.prototype.send=function(data){
-      if(this.readyState===1&&String(this.url||'').includes('/ws'))socket=this;
-      return NativeSend.call(this,data);
-    };
-  }
+  if(!WebSocket.prototype.__watchPartyCaptionPatch){WebSocket.prototype.__watchPartyCaptionPatch=true;WebSocket.prototype.send=function(data){if(this.readyState===1&&String(this.url||'').includes('/ws'))socket=this;return NativeSend.call(this,data)}}
   function installMessageHook(){
-    const s=findSocket();
-    if(!s||s.onmessage===lastMessageHandler)return;
-    const old=s.onmessage;
-    lastMessageHandler=old;
-    s.onmessage=function(e){
-      try{
-        const m=JSON.parse(e.data);
-        if(m.t==='caption_state'){enabled=!!m.enabled;if(!enabled)clearCaption();updateUi()}
-        if(m.t==='caption'&&m.text){enabled=true;if(showing)showCaption(m.text);updateUi()}
-      }catch{}
+    if(!socket||socket.readyState!==1||socket.__watchPartyCaptionHook)return;
+    const old=socket.onmessage;socket.__watchPartyCaptionHook=true;
+    socket.onmessage=function(e){
+      try{const m=JSON.parse(e.data);if(m.t==='caption'&&m.text){enabled=true;if(!showing)showing=true;showCaption(m.text);updateUi()}}catch{}
       return typeof old==='function'?old.call(this,e):undefined;
     };
   }
-
-  async function available(){
-    try{const r=await fetch(backend()+'/api/caption-config',{cache:'no-store'});if(!r.ok)return false;const d=await r.json();return !!d.enabled}catch{return false}
-  }
+  async function available(){try{const r=await fetch(backend()+'/api/caption-config',{cache:'no-store'});if(!r.ok)return false;const d=await r.json();return !!d.enabled}catch{return false}}
   async function start(){
-    if(!isHost())return toastMsg('The host must turn on live captions first.');
+    if(!isHost())return toastMsg('Ask the host to turn on live captions.');
     if(!(await available()))return toastMsg('Live captions are not configured on the room server yet. Add OPENAI_API_KEY on Render.');
-    const stream=v.srcObject||v.captureStream?.();
-    if(!stream||!stream.getAudioTracks().length)return toastMsg('No audio track is available. Start a video with audio first.');
+    const stream=v.srcObject||v.captureStream?.()||v.mozCaptureStream?.();if(!stream||!stream.getAudioTracks().length)return toastMsg('No audio track is available. Start a video with audio first.');
     try{
-      const audio=new MediaStream(stream.getAudioTracks());
-      const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(x=>MediaRecorder.isTypeSupported(x));
-      recorder=new MediaRecorder(audio,mime?{mimeType:mime}:undefined);
-      recorder.ondataavailable=e=>{if(e.data.size)sendChunk(e.data)};
-      recorder.onerror=()=>{stop(true);toastMsg('Live caption audio capture stopped.')};
-      recorder.start(4000);
-      enabled=true;showing=true;updateUi();
-      if(findSocket())findSocket().send(JSON.stringify({t:'caption_state',enabled:true}));
+      const audio=new MediaStream(stream.getAudioTracks()),mime=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(x=>MediaRecorder.isTypeSupported(x));
+      recorder=new MediaRecorder(audio,mime?{mimeType:mime}:undefined);recorder.ondataavailable=e=>{if(e.data.size)sendChunk(e.data)};recorder.onerror=()=>{stop();toastMsg('Live caption audio capture stopped.')};recorder.start(4000);
+      enabled=true;showing=true;updateUi();toastMsg('Live captions are on. They appear at the bottom of the video.');
     }catch(e){console.error(e);recorder=null;toastMsg('Could not start live captions in this browser.')}
   }
-  function stop(notify=true){
-    if(recorder){try{recorder.stop()}catch{}recorder=null}
-    enabled=false;clearCaption();updateUi();
-    if(notify&&findSocket())findSocket().send(JSON.stringify({t:'caption_state',enabled:false}));
-  }
+  function stop(){if(recorder){try{recorder.stop()}catch{}recorder=null}enabled=false;showing=false;clearCaption();updateUi()}
   async function sendChunk(blob){
     if(busy||!recorder)return;busy=true;
-    try{
-      const buf=await blob.arrayBuffer(),bytes=new Uint8Array(buf);let binary='';
-      for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
-      const r=await fetch(backend()+'/api/transcribe',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({audio:btoa(binary),mime:blob.type||'audio/webm'})});
-      if(!r.ok){if(r.status===503)toastMsg('Live captions are not configured on the server.');return}
-      const d=await r.json();if(d.text&&findSocket())findSocket().send(JSON.stringify({t:'caption',text:d.text}));
-    }catch(e){console.warn('Live caption request failed',e)}finally{busy=false}
+    try{const buf=await blob.arrayBuffer(),bytes=new Uint8Array(buf);let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));const r=await fetch(backend()+'/api/transcribe',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({audio:btoa(binary),mime:blob.type||'audio/webm'})});if(!r.ok)return;const d=await r.json();if(d.text&&socket&&socket.readyState===1)socket.send(JSON.stringify({t:'caption',text:d.text}))}catch(e){console.warn('Live caption request failed',e)}finally{busy=false}
   }
   function toggle(){
-    if(!enabled){if(isHost())start();else toastMsg('Ask the host to turn on live captions.');return}
-    if(isHost()&&recorder){stop(true);return}
+    if(isHost()){
+      if(recorder){stop();return}
+      start();return;
+    }
+    if(!enabled)return toastMsg('The host has not turned on live captions yet.');
     showing=!showing;if(!showing)clearCaption();updateUi();
   }
   function toastMsg(x){if(typeof toast==='function')toast(x);else console.log(x)}
-
-  document.addEventListener('DOMContentLoaded',()=>{
-    ensureUi();overlay();
-    setInterval(()=>{ensureUi();overlay();installMessageHook()},500);
-    v.addEventListener('emptied',()=>{if(recorder)stop(true);clearCaption();enabled=false;updateUi()});
-  });
-  window.addEventListener('beforeunload',()=>{if(recorder)stop(false)});
+  document.addEventListener('DOMContentLoaded',()=>{ensureUi();overlay();setInterval(()=>{ensureUi();overlay();installMessageHook()},500);v.addEventListener('emptied',()=>{if(recorder)stop();clearCaption()})});
+  window.addEventListener('beforeunload',()=>{if(recorder)stop()});
 })();
