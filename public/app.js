@@ -1,11 +1,158 @@
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],E=s=>String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const BACKEND_URL=(window.WATCH_PARTY_BACKEND_URL||'').trim();const BACKEND_MISSING=location.hostname.endsWith('github.io')&&!BACKEND_URL;const BACKEND_BASE=new URL((BACKEND_URL||location.origin).replace(/\/+$/,''));const backendUrl=p=>new URL(p,BACKEND_BASE).toString();const clock=new Sync.Clock(),v=$('#v'),cid=sessionStorage.cid||(sessionStorage.cid=Math.random().toString(36).slice(2,10)),oid=()=>Math.random().toString(36).slice(2,10);
-let ws,room,me,want,retry=0,applied=-1,drift=0,stop=false,movies={},cat='';
+let ws,room,me,want,retry=0,applied=-1,drift=0,stop=false,movies={},cat='',hostMediaStream=null,hostMediaMode=null,hostVideoUrl=null,peerConnections=new Map(),pendingIce=new Map(),stoppingMedia=false;
 $('#name').value=localStorage.name||'';const qc=new URLSearchParams(location.search).get('room');if(qc)$('#code').value=qc.toUpperCase();
 const tx=o=>ws&&ws.readyState===1&&ws.send(JSON.stringify(o)),ctl=o=>tx({t:'ctl',opId:oid(),...o});
 const toast=m=>{const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t.h);t.h=setTimeout(()=>t.style.display='none',2800)};
 const ping=()=>tx({t:'ping',c:Date.now()});setInterval(ping,3000);
-function connect(code){if(BACKEND_MISSING){$('#lerr').textContent='The website is online, but its room server is not connected yet. Deploy the backend on Render, then set its URL in public/config.js.';return}want=code;stop=false;const wsBase=new URL(BACKEND_BASE);ws=new WebSocket((wsBase.protocol==='https:'?'wss://':'ws://')+wsBase.host+'/ws');ws.onopen=()=>{retry=0;$('#lerr').textContent='';tx({t:'join',room:want,name:localStorage.name,cid});for(let i=0;i<6;i++)setTimeout(ping,i*120)};ws.onerror=()=>{$('#lerr').textContent='Could not connect to the room server. Check that the backend URL is correct and the server is running.'};ws.onmessage=e=>on(JSON.parse(e.data));ws.onclose=()=>{if(stop)return;$('#conn').textContent=room?'⚠ reconnecting…':'';if(BACKEND_MISSING)return;setTimeout(()=>connect(room?room.code:want),Math.min(5000,400*2**retry++))}}
+function connect(code){
+  if(BACKEND_MISSING){$('#lerr').textContent='The website is online, but its room server is not connected yet. Deploy the backend on Render, then set its URL in public/config.js.';return}
+  want=code;stop=false;
+  let target;
+  try{
+    const wsBase=new URL(BACKEND_BASE);
+    target=new WebSocket((wsBase.protocol==='https:'?'wss://':'ws://')+wsBase.host+'/ws');
+  }catch(err){$('#lerr').textContent='Invalid backend URL in public/config.js';return}
+  ws=target;
+  target.onopen=()=>{
+    if(ws!==target)return;
+    retry=0;$('#lerr').textContent='';$('#conn').textContent='';
+    target.send(JSON.stringify({t:'join',room:want,name:localStorage.name,cid}));
+    for(let i=0;i<6;i++)setTimeout(ping,i*120);
+  };
+  target.onerror=()=>{if(ws===target)$('#lerr').textContent='Could not connect to the room server. Check the backend URL and make sure Render is running.'};
+  target.onmessage=e=>{if(ws===target){try{on(JSON.parse(e.data))}catch(err){console.error('Invalid server message',err)}}};
+  target.onclose=()=>{
+    if(ws!==target||stop)return;
+    $('#conn').textContent=room?'⚠ reconnecting…':'';
+    setTimeout(()=>{if(!stop&&ws===target)connect(room?room.code:want)},Math.min(8000,500*2**retry++));
+  };
+}
+const rtcConfig={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+function signal(to,data){return tx({t:'rtc',to,data})}
+function closePeer(id){const pc=peerConnections.get(id);if(pc){pc.onicecandidate=null;pc.ontrack=null;try{pc.close()}catch{}peerConnections.delete(id)}pendingIce.delete(id)}
+async function flushIce(id,pc){const q=pendingIce.get(id)||[];pendingIce.delete(id);for(const c of q){try{await pc.addIceCandidate(c)}catch(err){console.warn('Unable to add ICE candidate',err)}}}
+function makePeer(id,isHost){
+  const pc=new RTCPeerConnection(rtcConfig);peerConnections.set(id,pc);
+  pc.onicecandidate=e=>{if(e.candidate)signal(id,{type:'candidate',candidate:e.candidate})};
+  pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed')toast('Media connection failed. Try sharing a browser tab or reconnecting.')};
+  if(!isHost)pc.ontrack=e=>{
+    if(!room||room.hostId!==id)return;
+    const stream=e.streams&&e.streams[0]?e.streams[0]:new MediaStream([e.track]);
+    v.pause();v.removeAttribute('src');v.srcObject=stream;v.play().catch(()=>toast('Press ▶ on the video player to show shared media'));
+    $('#mediaStatus').textContent='Receiving shared media from the host.';
+  };
+  return pc;
+}
+async function connectParticipant(id){
+  if(!hostMediaStream||!room||room.hostId!==me||id===me||peerConnections.has(id))return;
+  try{
+    const pc=makePeer(id,true);
+    hostMediaStream.getTracks().forEach(track=>pc.addTrack(track,hostMediaStream));
+    const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+    signal(id,{type:'offer',sdp:pc.localDescription});
+  }catch(err){closePeer(id);console.error('Could not start media connection',err);toast('Could not connect shared media to one participant.')}
+}
+function syncPeers(){
+  if(!room||room.hostId!==me||!hostMediaStream)return;
+  room.members.filter(m=>m.online&&m.id!==me).forEach(m=>connectParticipant(m.id));
+  for(const id of [...peerConnections.keys()])if(!room.members.some(m=>m.id===id&&m.online))closePeer(id);
+}
+async function handleSignal(m){
+  if(!room||!m.data||!m.from)return;
+  const d=m.data;
+  try{
+    if(d.type==='stop'){
+      closePeer(m.from);
+      if(room.hostId!==me){v.pause();v.srcObject=null;v.removeAttribute('src');$('#mediaStatus').textContent='The host stopped sharing media.'}
+      return;
+    }
+    if(d.type==='offer'){
+      if(m.from!==room.hostId||room.hostId===me)return;
+      closePeer(m.from);const pc=makePeer(m.from,false);
+      await pc.setRemoteDescription(d.sdp);await flushIce(m.from,pc);
+      const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+      signal(m.from,{type:'answer',sdp:pc.localDescription});return;
+    }
+    const pc=peerConnections.get(m.from);if(!pc)return;
+    if(d.type==='answer'){
+      if(room.hostId!==me)return;
+      await pc.setRemoteDescription(d.sdp);await flushIce(m.from,pc);
+    }else if(d.type==='candidate'){
+      if(pc.remoteDescription)await pc.addIceCandidate(d.candidate);
+      else{const q=pendingIce.get(m.from)||[];q.push(d.candidate);pendingIce.set(m.from,q)}
+    }
+  }catch(err){console.error('Media signaling error',err);toast('Could not establish media connection. Refresh and try again.')}
+}
+function resetHostMedia(notifyPeers=true){
+  if(notifyPeers)for(const id of [...peerConnections.keys()])signal(id,{type:'stop'});
+  for(const id of [...peerConnections.keys()])closePeer(id);
+  if(hostMediaStream)for(const track of hostMediaStream.getTracks())try{track.stop()}catch{}
+  hostMediaStream=null;hostMediaMode=null;
+}
+function updateMediaControls(){
+  const isHost=!!room&&room.hostId===me;
+  $('#videoFile').disabled=!isHost;$('#shareScreen').disabled=!isHost;
+  $('#stopShare').disabled=!isHost||!hostMediaMode;
+  if(hostMediaMode==='upload')$('#mediaStatus').textContent='Uploaded video is being streamed to the room.';
+  else if(hostMediaMode==='screen')$('#mediaStatus').textContent='Screen/tab sharing is live. Select a tab and enable tab audio for movie sound.';
+  else if(isHost)$('#mediaStatus').textContent='You are the host. Upload a video or share a tab with audio.';
+}
+async function activateHostMedia(stream,mode,title){
+  hostMediaStream=stream;hostMediaMode=mode;
+  const source='room-stream:'+mode+':'+oid();
+  ctl({op:'load',src:source,title:title|| (mode==='screen'?'Host screen':'Uploaded video')});
+  updateMediaControls();syncPeers();
+}
+async function startUpload(file){
+  if(!room||room.hostId!==me)return toast('Only the host can upload and play a video.');
+  if(!file)return;
+  if(!file.type.startsWith('video/'))return toast('Choose a valid video file, such as MP4.');
+  try{
+    resetHostMedia(true);
+    if(hostVideoUrl){URL.revokeObjectURL(hostVideoUrl);hostVideoUrl=null}
+    v.pause();v.srcObject=null;
+    hostVideoUrl=URL.createObjectURL(file);v.src=hostVideoUrl;v.load();
+    await new Promise((resolve,reject)=>{
+      if(v.readyState>=1)return resolve();
+      const ok=()=>{cleanup();resolve()},bad=()=>{cleanup();reject(new Error('Browser could not open this video file'))};
+      const cleanup=()=>{v.removeEventListener('loadedmetadata',ok);v.removeEventListener('error',bad)};
+      v.addEventListener('loadedmetadata',ok,{once:true});v.addEventListener('error',bad,{once:true});
+    });
+    const capture=v.captureStream||v.mozCaptureStream;
+    if(!capture)throw new Error('This browser cannot stream an uploaded video. Use a recent version of Chrome or Edge.');
+    v.currentTime=0;await v.play();
+    const stream=capture.call(v);
+    if(!stream.getVideoTracks().length)throw new Error('No video track was captured from this file.');
+    await activateHostMedia(stream,'upload',file.name);
+    toast('Video is playing and streaming to the room.');
+  }catch(err){console.error('Upload playback failed',err);resetHostMedia(false);$('#mediaStatus').textContent=err.message;toast(err.message||'Could not play this video file.')}
+}
+async function startScreenShare(){
+  if(!room||room.hostId!==me)return toast('Only the host can share their screen.');
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia)return toast('Screen sharing needs a supported browser and a secure HTTPS page.');
+  try{
+    const stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:30},audio:true});
+    resetHostMedia(true);
+    if(hostVideoUrl){URL.revokeObjectURL(hostVideoUrl);hostVideoUrl=null}
+    v.pause();v.removeAttribute('src');v.srcObject=stream;await v.play();
+    await activateHostMedia(stream,'screen','Host screen');
+    const vt=stream.getVideoTracks()[0];
+    if(vt)vt.addEventListener('ended',()=>{if(hostMediaMode==='screen')stopSharedMedia()},{once:true});
+    toast('Screen sharing started. For audio, choose a browser tab and enable Share tab audio.');
+  }catch(err){if(err&&err.name!=='NotAllowedError')toast(err.message||'Could not share the screen');console.warn('Screen sharing was not started',err)}
+}
+function stopSharedMedia(){
+  if(stoppingMedia||!room||room.hostId!==me)return;
+  stoppingMedia=true;
+  resetHostMedia(true);
+  if(hostVideoUrl){URL.revokeObjectURL(hostVideoUrl);hostVideoUrl=null}
+  v.pause();v.srcObject=null;v.removeAttribute('src');v.load();
+  tx({t:'media_stop',opId:oid()});
+  updateMediaControls();$('#mediaStatus').textContent='Shared media stopped.';
+  setTimeout(()=>{stoppingMedia=false},500);
+}
+
 function on(m){switch(m.t){case'welcome':me=m.you;room=m.room;applied=-1;$('#lobby').hidden=true;$('#app').hidden=false;$('#conn').textContent='';history.replaceState(0,'','?room='+room.code);$('#chatlog').innerHTML='';m.chat.forEach(addChat);render();applyPb();break;case'room':room=m.room;render();applyPb();break;case'pb':room.pb=m.pb;applyPb();break;case'chat':addChat(m.msg);break;case'react':{const f=document.createElement('div');f.className='fl';f.style.left=Math.random()*85+'%';f.textContent=m.emoji;f.title=m.name;$('#float').append(f);setTimeout(()=>f.remove(),2600);break}case'pong':clock.add(m.c,m.s,Date.now());break;case'fatal':stop=true;ws.close();$('#lerr').textContent=m.m;break;case'err':toast(m.m)}}
 const expected=()=>{const p=room.pb;return p.playing?p.pos+(clock.now()-p.at)/1000:p.pos};
 function applyPb(){const p=room.pb;if(p.seq===applied)return;applied=p.seq;if(!p.src){v.removeAttribute('src');return}if(v.getAttribute('src')!==p.src)v.src=p.src;const go=()=>{const q=room.pb;v.currentTime=Math.max(0,expected());q.playing?v.play().catch(()=>toast('Press ▶ to start (autoplay blocked)')):v.pause()};v.readyState>0?go():v.addEventListener('loadedmetadata',go,{once:true});renderPb()}
