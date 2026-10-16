@@ -30,7 +30,7 @@ function connect(code){
 }
 const rtcConfig={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
 function signal(to,data){return tx({t:'rtc',to,data})}
-function closePeer(id){const pc=peerConnections.get(id);if(pc){pc.onicecandidate=null;pc.ontrack=null;try{pc.close()}catch{}peerConnections.delete(id)}pendingIce.delete(id)}
+function closePeer(id){const pc=peerConnections.get(id);if(pc){pc.onicecandidate=null;pc.ontrack=null;try{pc.close()}catch{}peerConnections.delete(id);pendingIce.delete(id)}}
 async function flushIce(id,pc){const q=pendingIce.get(id)||[];pendingIce.delete(id);for(const c of q){try{await pc.addIceCandidate(c)}catch(err){console.warn('Unable to add ICE candidate',err)}}}
 function makePeer(id,isHost){
   const pc=new RTCPeerConnection(rtcConfig);peerConnections.set(id,pc);
@@ -74,7 +74,9 @@ async function handleSignal(m){
       const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
       signal(m.from,{type:'answer',sdp:pc.localDescription});return;
     }
-    const pc=peerConnections.get(m.from);if(!pc)return;
+    const pc=peerConnections.get(m.from);
+    if(d.type==='candidate'&&!pc){const q=pendingIce.get(m.from)||[];q.push(d.candidate);pendingIce.set(m.from,q);return}
+    if(!pc)return;
     if(d.type==='answer'){
       if(room.hostId!==me)return;
       await pc.setRemoteDescription(d.sdp);await flushIce(m.from,pc);
