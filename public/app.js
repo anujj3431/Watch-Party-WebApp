@@ -246,12 +246,75 @@ $('#seek').onchange=e=>{
   ctl({op:'seek',pos:e.target.value/1000*v.duration});
 };
 $('#emo').innerHTML=['👍','😂','😮','❤️','🔥','👏'].map(e=>`<button>${e}</button>`).join('');$('#emo').onclick=e=>e.target.tagName==='BUTTON'&&tx({t:'react',emoji:e.target.textContent});
-const start=code=>{const n=$('#name').value.trim();if(!n)return $('#lerr').textContent='Enter a name';localStorage.name=n;$('#lerr').textContent='';connect(code)};$('#create').onclick=()=>start(null);$('#join').onclick=()=>start($('#code').value.trim().toUpperCase());
-$('#copy').onclick=()=>navigator.clipboard.writeText(location.origin+location.pathname+'?room='+room.code).then(()=>toast('Invite link copied'));
+const start=code=>{
+  const n=$('#name').value.trim();
+  if(!n){$('#lerr').textContent='Enter a name';return}
+  if(ws&&(ws.readyState===WebSocket.CONNECTING||ws.readyState===WebSocket.OPEN))return toast('You are already connecting or in a room.');
+  localStorage.name=n;$('#lerr').textContent='';connect(code);
+};
+$('#create').onclick=()=>start(null);
+$('#join').onclick=()=>{const code=$('#code').value.trim().toUpperCase();if(!code){$('#lerr').textContent='Enter a room code to join. Use Create a room to make a new room.';return}start(code)};
+$('#copy').onclick=async()=>{
+  if(!room)return toast('Join a room first.');
+  const invite=location.origin+location.pathname+'?room='+room.code;
+  try{await navigator.clipboard.writeText(invite);toast('Invite link copied')}
+  catch{prompt('Copy this invite link:',invite)}
+};
 $$('.tabs button').forEach(b=>b.onclick=()=>{$$('.tabs button').forEach(x=>x.classList.toggle('on',x===b));$$('.tab').forEach(t=>t.hidden=t.id!=='t-'+b.dataset.t)});
-const addChat=g=>{const d=document.createElement('div');d.className='msg';d.innerHTML=`<b>${E(g.name)}</b> ${E(g.text)}`;$('#chatlog').append(d);$('#chatlog').scrollTop=1e9};const sendChat=()=>{const i=$('#ci');if(i.value.trim())tx({t:'chat',text:i.value});i.value=''};$('#cs').onclick=sendChat;$('#ci').onkeydown=e=>e.key==='Enter'&&sendChat();$('#qa').onclick=()=>{const u=$('#qu').value.trim();if(u)tx({t:'q_add',src:u});$('#qu').value=''};$('#pc').onclick=()=>{tx({t:'poll_new',q:$('#pq').value,opts:$('#po').value.split('\n')});$('#pq').value=$('#po').value=''};$('#ctlmode').onchange=e=>tx({t:'settings',controls:e.target.value});
-document.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(!b)return;const d=b.dataset,mv=movies[d.id];({play:()=>ctl({op:'load',src:mv.url,title:mv.title}),queue:()=>tx({t:'q_add',movieId:d.id}),qplay:()=>tx({t:'q_play',id:d.id}),qrm:()=>tx({t:'q_rm',id:d.id}),qmv:()=>tx({t:'q_mv',id:d.id,dir:+d.dir}),vote:()=>tx({t:'vote',pid:d.id,i:+d.i}),close:()=>tx({t:'poll_close',pid:d.id}),host:()=>tx({t:'host',to:d.id})})[d.a]()});
-function render(){const r=room,host=r.hostId===me;$('#rc').textContent=r.code;$('#ctlmode').value=r.controls;$('#ctlmode').disabled=!host;renderPb();$('#people').innerHTML=r.members.map(m=>`<div class="item"><i class="dot ${m.online?'':'off'}"></i><span>${E(m.name)}${m.id===me?' (you)':''}${m.id===r.hostId?' 👑':''} <small class="mut">${m.online?Math.abs(m.drift)+'ms':'offline'}</small></span>${host&&m.online&&m.id!==me?`<button data-a="host" data-id="${m.id}">Make host</button>`:''}</div>`).join('');$('#ql').innerHTML=r.queue.map(q=>`<div class="item"><span>${E(q.title)}</span><button data-a="qplay" data-id="${q.id}">▶</button><button data-a="qmv" data-dir="-1" data-id="${q.id}">▲</button><button data-a="qmv" data-dir="1" data-id="${q.id}">▼</button><button data-a="qrm" data-id="${q.id}">✕</button></div>`).join('')||'<p class="mut">Queue is empty. Add from Discover.</p>';$('#pl').innerHTML=r.polls.slice().reverse().map(p=>{const tot=p.opts.reduce((s,o)=>s+o.v.length,0);return`<div class="poll"><b>${E(p.q)}</b>${p.opts.map((o,i)=>`<button class="opt" data-a="vote" data-id="${p.id}" data-i="${i}" ${p.open?'':'disabled'}><i style="width:${tot?o.v.length/tot*100:0}%"></i><span>${E(o.t)} — ${o.v.length}${o.v.includes(me)?' ✓':''}</span></button>`).join('')}${p.open&&(p.by===me||host)?`<button data-a="close" data-id="${p.id}">Close poll</button>`:p.open?'':'<small class="mut"> closed</small>'}</div>`}).join('')||'<p class="mut">No polls yet.</p>'}
+const addChat=g=>{
+  const d=document.createElement('div');d.className='msg';
+  const who=document.createElement('b');who.textContent=g.name||'Guest';
+  d.append(who,document.createTextNode(' '+(g.text||'')));
+  $('#chatlog').append(d);$('#chatlog').scrollTop=1e9;
+};
+const sendChat=()=>{
+  const i=$('#ci'),message=i.value.trim();if(!message)return;
+  if(!ws||ws.readyState!==WebSocket.OPEN){toast('Chat is disconnected. Wait for the room to reconnect, then send again.');return}
+  tx({t:'chat',text:message});i.value='';i.focus();
+};
+$('#cs').onclick=sendChat;$('#ci').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}};
+$('#qa').onclick=()=>{const u=$('#qu').value.trim();if(!u)return;if(!ws||ws.readyState!==WebSocket.OPEN)return toast('Room is disconnected.');tx({t:'q_add',src:u});$('#qu').value=''};
+$('#pc').onclick=()=>{
+  const question=$('#pq').value.trim(),options=$('#po').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  if(!question||options.length<2)return toast('Add a poll question and at least two options.');
+  if(!ws||ws.readyState!==WebSocket.OPEN)return toast('Room is disconnected.');
+  tx({t:'poll_new',q:question,opts:options,allowMultiple:$('#pmulti').checked});
+  $('#pq').value='';$('#po').value='';$('#pmulti').checked=false;
+};
+$('#ctlmode').onchange=e=>tx({t:'settings',controls:e.target.value});
+$('#videoFile').onchange=e=>{const file=e.target.files&&e.target.files[0];if(file)startUpload(file);e.target.value=''};
+$('#shareScreen').onclick=()=>startScreenShare();
+$('#stopShare').onclick=()=>stopSharedMedia();
+
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-a]');if(!b)return;
+  const d=b.dataset,mv=movies[d.id];
+  const actions={
+    play:()=>{if(mv)ctl({op:'load',src:mv.url,title:mv.title})},
+    queue:()=>{if(mv)tx({t:'q_add',movieId:d.id})},
+    qplay:()=>tx({t:'q_play',id:d.id}),
+    qrm:()=>tx({t:'q_rm',id:d.id}),
+    qmv:()=>tx({t:'q_mv',id:d.id,dir:+d.dir}),
+    vote:()=>tx({t:'vote',pid:d.id,i:+d.i}),
+    close:()=>tx({t:'poll_close',pid:d.id}),
+    host:()=>tx({t:'host',to:d.id}),
+    kick:()=>{if(confirm('Remove this participant from the room?'))tx({t:'kick',id:d.id})}
+  };
+  if(actions[d.a])actions[d.a]();
+});
+function render(){
+  const r=room,host=r.hostId===me;
+  $('#rc').textContent=r.code;$('#ctlmode').value=r.controls;$('#ctlmode').disabled=!host;renderPb();
+  $('#people').innerHTML=r.members.map(m=>'<div class="item"><i class="dot '+(m.online?'':'off')+'"></i><span>'+E(m.name)+(m.id===me?' (you)':'')+(m.id===r.hostId?' 👑':'')+' <small class="mut">'+(m.online?Math.abs(m.drift)+'ms':'offline')+'</small></span>'+(host&&m.online&&m.id!==me?'<button data-a="host" data-id="'+E(m.id)+'">Make host</button><button data-a="kick" data-id="'+E(m.id)+'">Remove</button>':'')+'</div>').join('');
+  $('#ql').innerHTML=r.queue.map(q=>'<div class="item"><span>'+E(q.title)+'</span><button data-a="qplay" data-id="'+E(q.id)+'">▶</button><button data-a="qmv" data-dir="-1" data-id="'+E(q.id)+'">▲</button><button data-a="qmv" data-dir="1" data-id="'+E(q.id)+'">▼</button><button data-a="qrm" data-id="'+E(q.id)+'">✕</button></div>').join('')||'<p class="mut">Queue is empty. Add a URL or choose a video.</p>';
+  $('#pl').innerHTML=r.polls.slice().reverse().map(p=>{
+    const total=p.opts.reduce((sum,o)=>sum+o.v.length,0);
+    return '<div class="poll"><b>'+E(p.q)+'</b><small class="mut">'+(p.allowMultiple?'Multiple choices allowed':'One choice per voter')+'</small>'+
+      p.opts.map((o,i)=>'<button class="opt" data-a="vote" data-id="'+E(p.id)+'" data-i="'+i+'" '+(p.open?'':'disabled')+'><i style="width:'+(total?o.v.length/total*100:0)+'%"></i><span>'+E(o.t)+' — '+o.v.length+(o.v.includes(me)?' ✓':'')+'</span></button>').join('')+
+      (p.open&&(p.by===me||host)?'<button data-a="close" data-id="'+E(p.id)+'">Close poll</button>':p.open?'':'<small class="mut">Closed</small>')+'</div>';
+  }).join('')||'<p class="mut">No polls yet.</p>';
+  updateMediaControls();
+}
 async function find(){
   if(BACKEND_MISSING){$('#cats').innerHTML='';$('#movies').innerHTML='<p class="mut">Movie catalogue is waiting for the backend connection.</p>';return}
   try{
