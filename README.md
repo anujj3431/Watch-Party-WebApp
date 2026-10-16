@@ -27,7 +27,7 @@ If using an existing Render service, it should deploy each push to `main`; check
 
 The room host can choose **Upload video** to play a local MP4/WebM supported by the browser or **Share screen / tab** to stream a display capture to participants using WebRTC. The video file is read in the host's browser and streamed peer-to-peer; it is not uploaded to the hosting server. For movie audio with screen sharing, choose a browser tab and enable the browser's **Share tab audio** option.
 
-WebRTC uses a public STUN server. Some networks/firewalls need a TURN relay, which is not configured in this starter deployment; direct media connections may fail on those networks.
+WebRTC uses a public STUN server by default. For reliable connections across restrictive networks, configure a TURN service in the Render backend environment with TURN_URLS, TURN_USERNAME, and TURN_CREDENTIAL. These credentials are delivered to clients for WebRTC use; use scoped/short-lived credentials from your TURN provider. Without TURN, some network combinations will not connect. The frontend now shows the actual peer connection count rather than claiming that local capture means everyone is connected.
 
 ## Rooms and codes
 
