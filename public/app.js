@@ -28,25 +28,48 @@ function connect(code){
     setTimeout(()=>{if(!stop&&ws===target)connect(room?room.code:want)},Math.min(8000,500*2**retry++));
   };
 }
-const rtcConfig={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+let rtcConfig={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+let rtcConfigPromise=null,rtcUsesTurn=false;
+async function ensureRtcConfig(){
+  if(!rtcConfigPromise)rtcConfigPromise=(async()=>{
+    try{
+      const res=await fetch(backendUrl('/api/ice-config'),{cache:'no-store'});
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      const data=await res.json();
+      if(Array.isArray(data.iceServers)&&data.iceServers.some(x=>x&&x.urls))rtcConfig={iceServers:data.iceServers};
+      rtcUsesTurn=!!data.turnEnabled;
+    }catch(err){console.warn('Could not load ICE server configuration; falling back to STUN:',err)}
+  })();
+  await rtcConfigPromise;
+  return rtcConfig;
+}
 function signal(to,data){return tx({t:'rtc',to,data})}
 function closePeer(id){const pc=peerConnections.get(id);if(pc){pc.onicecandidate=null;pc.ontrack=null;try{pc.close()}catch{}peerConnections.delete(id);pendingIce.delete(id)}}
 async function flushIce(id,pc){const q=pendingIce.get(id)||[];pendingIce.delete(id);for(const c of q){try{await pc.addIceCandidate(c)}catch(err){console.warn('Unable to add ICE candidate',err)}}}
 function makePeer(id,isHost){
   const pc=new RTCPeerConnection(rtcConfig);peerConnections.set(id,pc);
   pc.onicecandidate=e=>{if(e.candidate)signal(id,{type:'candidate',candidate:e.candidate})};
-  pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed')toast('Media connection failed. Try sharing a browser tab or reconnecting.')};
+  pc.onconnectionstatechange=()=>{
+    updateMediaControls();
+    if(pc.connectionState==='failed'){
+      const name=room&&room.members.find(m=>m.id===id)?.name||'a participant';
+      $('#mediaStatus').textContent='Could not connect to '+name+'. '+(rtcUsesTurn?'Try restarting sharing.':'This network may require a TURN relay; configure TURN_URLS, TURN_USERNAME and TURN_CREDENTIAL on Render.');
+      toast('Media connection failed for '+name+'.');
+    }
+  };
+  pc.oniceconnectionstatechange=()=>{updateMediaControls();if(pc.iceConnectionState==='failed')console.warn('WebRTC ICE failed for',id,pc.iceConnectionState)};
   if(!isHost)pc.ontrack=e=>{
     if(!room||room.hostId!==id)return;
     const stream=e.streams&&e.streams[0]?e.streams[0]:new MediaStream([e.track]);
     v.pause();v.removeAttribute('src');v.srcObject=stream;v.muted=true;$('#enableAudio').disabled=false;$('#enableAudio').textContent='Enable audio';v.play().catch(()=>toast('Click Enable audio if the video does not start.'));
-    $('#mediaStatus').textContent='Receiving shared media from the host. Click Enable audio to hear movie sound.';
+    $('#mediaStatus').textContent='Receiving shared media from the host. Click Enable audio to hear movie sound.';updateMediaControls();
   };
   return pc;
 }
 async function connectParticipant(id){
   if(!hostMediaStream||!room||room.hostId!==me||id===me||peerConnections.has(id))return;
   try{
+    await ensureRtcConfig();
     const pc=makePeer(id,true);
     hostMediaStream.getTracks().forEach(track=>pc.addTrack(track,hostMediaStream));
     const offer=await pc.createOffer();await pc.setLocalDescription(offer);
@@ -69,7 +92,11 @@ async function handleSignal(m){
     }
     if(d.type==='offer'){
       if(m.from!==room.hostId||room.hostId===me)return;
-      closePeer(m.from);const pc=makePeer(m.from,false);
+      await ensureRtcConfig();
+      const earlyIce=pendingIce.get(m.from)||[];
+      closePeer(m.from);
+      if(earlyIce.length)pendingIce.set(m.from,earlyIce);
+      const pc=makePeer(m.from,false);
       await pc.setRemoteDescription(d.sdp);await flushIce(m.from,pc);
       const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
       signal(m.from,{type:'answer',sdp:pc.localDescription});return;
@@ -96,9 +123,15 @@ function updateMediaControls(){
   const isHost=!!room&&room.hostId===me;
   $('#videoFile').disabled=!isHost;$('#shareScreen').disabled=!isHost;
   $('#stopShare').disabled=!isHost||!hostMediaMode;
-  if(hostMediaMode==='upload')$('#mediaStatus').textContent='Uploaded video is being streamed to the room.';
-  else if(hostMediaMode==='screen')$('#mediaStatus').textContent='Screen/tab sharing is live. Select a tab and enable tab audio for movie sound.';
-  else if(isHost)$('#mediaStatus').textContent='You are the host. Upload a video or share a tab with audio.';
+  $('#enableAudio').disabled=!v.srcObject;
+  if(hostMediaMode){
+    const participants=(room?.members||[]).filter(m=>m.online&&m.id!==me);
+    const connected=participants.filter(m=>{const pc=peerConnections.get(m.id);return pc&&['connected','completed'].includes(pc.connectionState)}).length;
+    const summary=participants.length?('Connected to '+connected+'/'+participants.length+' participant(s).'):'No other participants are connected yet.';
+    if(hostMediaMode==='upload')$('#mediaStatus').textContent='Local video is playing. '+summary;
+    else $('#mediaStatus').textContent='Your screen/tab is captured locally. '+summary+' For audio, share a browser tab with tab audio enabled.';
+    if(participants.length&&connected===0)$('#mediaStatus').textContent+=' If this persists, the other browser may be on an incompatible network; TURN relay may be required.';
+  }else if(isHost)$('#mediaStatus').textContent='You are the host. Upload a video or share a tab with audio.';
 }
 async function activateHostMedia(stream,mode,title){
   hostMediaStream=stream;hostMediaMode=mode;
