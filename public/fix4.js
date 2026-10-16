@@ -1,20 +1,29 @@
 (()=>{
   const $=s=>document.querySelector(s);
-  const sendChat=()=>{
+
+  function sendChat(){
     const input=$('#ci');
     if(!input)return;
-    const text=input.value.trim();
+    const text=String(input.value||'').trim();
     if(!text)return;
-    if(typeof tx==='function')tx({t:'chat',text});
+    if(typeof tx!=='function'){
+      console.error('Watch Party: chat transport is unavailable');
+      if(typeof toast==='function')toast('Chat connection is not ready. Please wait a moment.');
+      return;
+    }
+    const sent=tx({t:'chat',text});
+    if(sent===false){
+      if(typeof toast==='function')toast('Chat connection is not ready. Please reconnect.');
+      return;
+    }
     input.value='';
     input.focus();
-  };
+  }
 
   function installChat(){
     const input=$('#ci'),button=$('#cs');
     if(!input||!button)return;
 
-    // Never let the room state disable or lock the guest chat box.
     input.disabled=false;
     input.readOnly=false;
     input.removeAttribute('disabled');
@@ -24,23 +33,20 @@
     input.style.userSelect='text';
     input.style.webkitUserSelect='text';
 
-    if(input.dataset.chatFix!=='1'){
-      input.dataset.chatFix='1';
-      input.addEventListener('keydown',e=>{
-        if(e.key==='Enter'&&!e.shiftKey){
-          e.preventDefault();
-          sendChat();
-        }
-      });
-    }
-    if(button.dataset.chatFix!=='1'){
-      button.dataset.chatFix='1';
-      button.type='button';
-      button.addEventListener('click',e=>{
+    // Replace the old handlers instead of stacking listeners on every render.
+    input.onkeydown=e=>{
+      if(e.key==='Enter'&&!e.shiftKey){
         e.preventDefault();
+        e.stopPropagation();
         sendChat();
-      });
-    }
+      }
+    };
+    button.type='button';
+    button.onclick=e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      sendChat();
+    };
   }
 
   function installPlay(){
