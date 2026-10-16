@@ -39,8 +39,8 @@ function makePeer(id,isHost){
   if(!isHost)pc.ontrack=e=>{
     if(!room||room.hostId!==id)return;
     const stream=e.streams&&e.streams[0]?e.streams[0]:new MediaStream([e.track]);
-    v.pause();v.removeAttribute('src');v.srcObject=stream;v.play().catch(()=>toast('Press ▶ on the video player to show shared media'));
-    $('#mediaStatus').textContent='Receiving shared media from the host.';
+    v.pause();v.removeAttribute('src');v.srcObject=stream;v.muted=true;$('#enableAudio').disabled=false;$('#enableAudio').textContent='Enable audio';v.play().catch(()=>toast('Click Enable audio if the video does not start.'));
+    $('#mediaStatus').textContent='Receiving shared media from the host. Click Enable audio to hear movie sound.';
   };
   return pc;
 }
@@ -64,7 +64,7 @@ async function handleSignal(m){
   try{
     if(d.type==='stop'){
       closePeer(m.from);pendingIce.delete(m.from);
-      if(room.hostId!==me){v.pause();v.srcObject=null;v.removeAttribute('src');$('#mediaStatus').textContent='The host stopped sharing media.'}
+      if(room.hostId!==me){v.pause();v.srcObject=null;v.removeAttribute('src');v.muted=false;$('#enableAudio').disabled=true;$('#enableAudio').textContent='Enable audio';$('#mediaStatus').textContent='The host stopped sharing media.'}
       return;
     }
     if(d.type==='offer'){
@@ -185,7 +185,7 @@ const expected=()=>{const p=room.pb;return p.playing?p.pos+(clock.now()-p.at)/10
 function applyPb(){
   if(!room||!room.pb)return;
   const p=room.pb;if(p.seq===applied)return;applied=p.seq;
-  if(!p.src){v.pause();v.removeAttribute('src');v.srcObject=null;renderPb();return}
+  if(!p.src){v.pause();v.removeAttribute('src');v.srcObject=null;v.muted=false;$('#enableAudio').disabled=true;$('#enableAudio').textContent='Enable audio';renderPb();return}
   if(p.src.startsWith('room-stream:')){
     if(room.hostId===me&&hostMediaMode==='upload'){
       v.srcObject=null;
@@ -198,7 +198,7 @@ function applyPb(){
     }
     renderPb();return;
   }
-  if(v.srcObject)v.srcObject=null;
+  if(v.srcObject){v.srcObject=null;v.muted=false;$('#enableAudio').disabled=true;$('#enableAudio').textContent='Enable audio'}
   if(v.getAttribute('src')!==p.src)v.src=p.src;
   const go=()=>{if(!room)return;const q=room.pb;v.currentTime=Math.max(0,expected());q.playing?v.play().catch(()=>toast('Press ▶ to start (autoplay blocked)')):v.pause()};
   v.readyState>0?go():v.addEventListener('loadedmetadata',go,{once:true});renderPb();
@@ -287,6 +287,7 @@ $('#ctlmode').onchange=e=>tx({t:'settings',controls:e.target.value});
 $('#videoFile').onchange=e=>{const file=e.target.files&&e.target.files[0];if(file)startUpload(file);e.target.value=''};
 $('#shareScreen').onclick=()=>startScreenShare();
 $('#stopShare').onclick=()=>stopSharedMedia();
+$('#enableAudio').onclick=()=>{v.muted=!v.muted;$('#enableAudio').textContent=v.muted?'Enable audio':'Mute audio';v.play().catch(()=>toast('Click the video player to start playback.'))};
 
 document.addEventListener('click',e=>{
   const b=e.target.closest('[data-a]');if(!b)return;
