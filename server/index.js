@@ -23,6 +23,7 @@ async function start({port=+process.env.PORT||3000,hostGraceMs=+process.env.HOST
   const wss=new WebSocketServer({server:srv,path:'/ws',maxPayload:16384,perMessageDeflate:false});
   const bc=(r,o)=>{const s=JSON.stringify(o);r.conns.forEach(w=>w.readyState===1&&w.send(s))};
   const push=r=>bc(r,{t:'room',room:r.snapshot()});
+  const notice=(r,text)=>bc(r,{t:'notice',text:String(text||'').slice(0,180),at:Date.now()});
   function handle(r,id,m,send){
     const e=x=>x&&x.err&&send({t:'err',m:x.err}),pbOut=(x,opId)=>x&&!x.err&&bc(r,{t:'pb',pb:x,by:id,opId});
     switch(m.t){
@@ -34,10 +35,14 @@ async function start({port=+process.env.PORT||3000,hostGraceMs=+process.env.HOST
       case'q_add':{const mv=byId(m.movieId);const it=mv?{src:mv.url,title:mv.title,movieId:mv.id}:/^https?:\/\//.test(m.src||'')?{src:String(m.src).slice(0,500),title:String(m.title||m.src).slice(0,80)}:null;if(!it)return send({t:'err',m:'Invalid video'});r.qAdd(id,it);push(r);break}
       case'q_rm':r.qRm(m.id);push(r);break;
       case'q_mv':r.qMv(m.id,m.dir);push(r);break;
-      case'poll_new':e(r.pollNew(id,m.q,m.opts));push(r);break;
+      case'poll_new':{const x=r.pollNew(id,m.q,m.opts,m.allowMultiple);if(x&&x.err)return e(x);notice(r,`${r.members.get(id)?.name||'Someone'} created a poll: ${String(m.q||'').slice(0,100)}`);push(r);break;}
       case'vote':r.vote(id,m.pid,m.i);push(r);break;
       case'poll_close':r.pollClose(id,m.pid);push(r);break;
-      case'host':e(r.transferHost(id,m.to));push(r);break;
+      case'host':{const x=r.transferHost(id,m.to);e(x);if(!x||!x.err){notice(r,`${r.members.get(id)?.name||'The host'} transferred host control`);push(r)}break;}
+      case'kick':{const x=r.kick(id,String(m.id||''));if(x&&x.err)return e(x);const target=r.conns.get(x.id);if(target&&target.readyState===1)target.send(JSON.stringify({t:'fatal',m:'The host removed you from this room'}));r.conns.delete(x.id);if(target)target.close(4003,'removed by host');notice(r,`${x.name} was removed by the host`);push(r);break;}
+      case'rtc':{const to=String(m.to||'').slice(0,16),d=m.data;if(!to||!d||!['offer','answer','candidate','stop'].includes(d.type))return send({t:'err',m:'Invalid media signaling message'});const fromHost=id===r.hostId;if((d.type==='offer'||d.type==='stop')&&!fromHost)return send({t:'err',m:'Only the host can start or stop shared media'});if(fromHost){const member=r.members.get(to);if(!member||!member.online||to===id)return send({t:'err',m:'Participant is no longer connected'})}else if(to!==r.hostId)return send({t:'err',m:'Media signaling must go through the host'});const dest=r.conns.get(to);if(!dest||dest.readyState!==1)return send({t:'err',m:'Participant is offline'});dest.send(JSON.stringify({t:'rtc',from:id,data:d}));break;}
+      case'media_stop':{if(id!==r.hostId)return send({t:'err',m:'Only the host can stop shared media'});const x=r.control(id,{op:'clear',opId:String(m.opId||'media-stop')});if(x&&!x.err){pbOut(x,m.opId);notice(r,`${r.members.get(id)?.name||'The host'} stopped shared media`);push(r)}else e(x);break;}
+      case'media_ended':{if(id!==r.hostId||!String(r.pb.src||'').startsWith('room-stream:'))return; r.pb.playing=false;r.pb.pos=0;r.pb.at=Date.now();r.pb.seq++;bc(r,{t:'pb',pb:{...r.pb},by:id});notice(r,'The shared video has finished');push(r);break;}
       case'settings':r.setControls(id,m.controls);push(r);break;
       case'drift':r.setDrift(id,m.ms);push(r);break;
     }
@@ -56,16 +61,19 @@ async function start({port=+process.env.PORT||3000,hostGraceMs=+process.env.HOST
         if(c&&!room)return send({t:'fatal',m:'Room not found'});
         if(!room){let k;do k=code5();while(rooms.has(k));room=new Room(k);room.conns=new Map();rooms.set(k,room)}
         const cid=String(m.cid||'').replace(/\W/g,'').slice(0,16)||Math.random().toString(36).slice(2,10);
+        if(room.kicked&&room.kicked.has(cid))return send({t:'fatal',m:'You were removed from this room by the host'});
         if(!room.members.has(cid)&&room.members.size>=MAX)return send({t:'fatal',m:'Room is full'});
+        const previous=room.members.get(cid),wasOnline=!!(previous&&previous.online);
         const old=room.conns.get(cid);if(old&&old!==ws)old.close(4000,'replaced');
         r=room;id=cid;r.conns.set(id,ws);r.join(id,String(m.name||'Guest').slice(0,24));
-        send({t:'welcome',you:id,room:r.snapshot(),chat:r.chat});push(r);return;
+        send({t:'welcome',you:id,room:r.snapshot(),chat:r.chat});if(!wasOnline)notice(r,`${r.members.get(id)?.name||'Someone'} joined the room`);push(r);return;
       }
       if(r)handle(r,id,m,send);
     });
     ws.on('close',()=>{
       if(!r||r.conns.get(id)!==ws)return;
       r.conns.delete(id);r.leave(id);
+      if(r.members.has(id))notice(r,`${r.members.get(id)?.name||'A participant'} left the room`);
       if(r.hostId===id)setTimeout(()=>{const mm=r.members.get(id);if(r.hostId===id&&mm&&!mm.online){r.electHost();push(r)}},hostGraceMs).unref();
       push(r);
     });
