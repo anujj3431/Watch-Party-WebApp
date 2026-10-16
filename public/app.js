@@ -63,7 +63,7 @@ async function handleSignal(m){
   const d=m.data;
   try{
     if(d.type==='stop'){
-      closePeer(m.from);
+      closePeer(m.from);pendingIce.delete(m.from);
       if(room.hostId!==me){v.pause();v.srcObject=null;v.removeAttribute('src');$('#mediaStatus').textContent='The host stopped sharing media.'}
       return;
     }
