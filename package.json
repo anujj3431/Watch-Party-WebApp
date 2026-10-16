@@ -1,0 +1,1 @@
+{"name":"watch-party","version":"1.0.0","description":"Real-time synchronized watch-party app","license":"MIT","main":"server/index.js","scripts":{"start":"node server/index.js","test":"node --test test/*.test.js","bench":"node scripts/bench.js"},"dependencies":{"ws":"^8.18.0"},"engines":{"node":">=18"}}
