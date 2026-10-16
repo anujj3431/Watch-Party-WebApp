@@ -7,7 +7,21 @@ async function start({port=+process.env.PORT||3000,hostGraceMs=+process.env.HOST
   const rooms=new Map();
   const srv=http.createServer((req,res)=>{
     const u=new URL(req.url,'http://x');
-    if(u.pathname==='/healthz')return res.end('ok');
+    if(u.pathname==='/healthz')return res.end('ok; webrtc-signaling=1');
+    if(u.pathname==='/api/ice-config'){
+      res.setHeader('access-control-allow-origin','https://anujj3431.github.io');
+      res.setHeader('access-control-allow-methods','GET, OPTIONS');
+      res.setHeader('cache-control','no-store');
+      if(req.method==='OPTIONS'){res.statusCode=204;return res.end()}
+      if(req.method!=='GET'){res.statusCode=405;return res.end('method not allowed')}
+      const iceServers=[{urls:'stun:stun.l.google.com:19302'}];
+      const turnUrls=String(process.env.TURN_URLS||'').split(',').map(x=>x.trim()).filter(Boolean);
+      const turnUsername=String(process.env.TURN_USERNAME||'').trim();
+      const turnCredential=String(process.env.TURN_CREDENTIAL||'').trim();
+      if(turnUrls.length&&turnUsername&&turnCredential)iceServers.push({urls:turnUrls,username:turnUsername,credential:turnCredential});
+      res.setHeader('content-type','application/json');
+      return res.end(JSON.stringify({iceServers,turnEnabled:iceServers.length>1}));
+    }
     if(u.pathname==='/api/movies'){
       // Allow the GitHub Pages frontend to query this separate backend.
       res.setHeader('access-control-allow-origin','*');
