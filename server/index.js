@@ -8,7 +8,14 @@ async function start({port=+process.env.PORT||3000,hostGraceMs=+process.env.HOST
   const srv=http.createServer((req,res)=>{
     const u=new URL(req.url,'http://x');
     if(u.pathname==='/healthz')return res.end('ok');
-    if(u.pathname==='/api/movies'){const p=u.searchParams;res.setHeader('content-type','application/json');return res.end(JSON.stringify({cats:CATS,movies:search({q:p.get('q')||'',cat:p.get('cat')||'',minRating:+p.get('minRating')||0,sort:p.get('sort')||''})}))}
+    if(u.pathname==='/api/movies'){
+      // Allow the GitHub Pages frontend to query this separate backend.
+      res.setHeader('access-control-allow-origin','*');
+      res.setHeader('access-control-allow-methods','GET, OPTIONS');
+      if(req.method==='OPTIONS'){res.statusCode=204;return res.end()}
+      if(req.method!=='GET'){res.statusCode=405;return res.end('method not allowed')}
+      const p=u.searchParams;res.setHeader('content-type','application/json');return res.end(JSON.stringify({cats:CATS,movies:search({q:p.get('q')||'',cat:p.get('cat')||'',minRating:+p.get('minRating')||0,sort:p.get('sort')||''})}))
+    }
     const f=path.join(PUB,u.pathname==='/'?'index.html':u.pathname);
     if(!f.startsWith(PUB)||!fs.existsSync(f)||fs.statSync(f).isDirectory()){res.statusCode=404;return res.end('not found')}
     res.setHeader('content-type',MIME[path.extname(f)]||'application/octet-stream');fs.createReadStream(f).pipe(res);
