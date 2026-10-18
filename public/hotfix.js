@@ -11,4 +11,17 @@
     e.preventDefault();
     switchTab(tab.dataset.t);
   },true);
+  document.addEventListener('click',e=>{
+    const btn=e.target.closest?.('#fullscreen');
+    if(!btn)return;
+    e.preventDefault();
+    const video=$('#v');
+    if(!video)return;
+    if(document.fullscreenElement||document.webkitFullscreenElement){
+      (document.exitFullscreen||document.webkitExitFullscreen)?.call(document);
+      return;
+    }
+    const enter=video.requestFullscreen||video.webkitRequestFullscreen;
+    if(enter)enter.call(video).catch?.(()=>{});
+  });
 })();
